@@ -431,7 +431,11 @@ body {
 </head>
 <body>
 
-<div id="pdf-loading"><div class="spinner"></div><p>Generando PDF… por favor espera</p></div>
+<div id="pdf-loading">
+  <div class="spinner"></div>
+  <p>Generando PDF… por favor espera</p>
+  <small style="color:#94a3b8;font-size:11px;margin-top:-8px;">Esto puede tardar unos segundos</small>
+</div>
 
 <!-- ══ HEADER ══ -->
 <header class="site-header">
@@ -1328,38 +1332,132 @@ function buildDots(id, level, color) {
 // ── PDF EXPORT ──
 async function downloadPDF() {
   const loading = document.getElementById('pdf-loading');
+  const loadingText = loading.querySelector('p');
   loading.classList.add('show');
+
   try {
     const { jsPDF } = window.jspdf;
     const active = document.querySelector('.day-section.active');
     const label = active.querySelector('.day-label')?.textContent || 'Día';
     const title = active.querySelector('.day-title')?.textContent || '';
-    const canvas = await html2canvas(active, { scale:1.5, useCORS:true, allowTaint:true, backgroundColor:'#f0f4f8', logging:false, windowWidth:1200 });
-    const pdf = new jsPDF({ orientation: canvas.width > canvas.height ? 'l' : 'p', unit:'mm', format:'a4' });
-    const pW = pdf.internal.pageSize.getWidth(), pH = pdf.internal.pageSize.getHeight();
-    const m = 10, cW = pW - m*2, ratio = cW / canvas.width;
-    pdf.setFillColor(240,244,248); pdf.rect(0,0,pW,pH,'F');
-    pdf.setFontSize(10); pdf.setTextColor(30,58,95);
-    pdf.text('Catalina · Medicina, Nutrición y Deporte', m, 7);
-    pdf.text(`${label} — ${title}`, m, 12);
-    pdf.setDrawColor(226,232,240); pdf.line(m,14,pW-m,14);
-    let srcY = 0, yOff = 17;
-    while (srcY < canvas.height) {
-      const slH = Math.min((pH - yOff - 8) / ratio, canvas.height - srcY);
-      const sc = document.createElement('canvas'); sc.width = canvas.width; sc.height = slH;
-      sc.getContext('2d').drawImage(canvas, 0, -srcY);
-      pdf.addImage(sc.toDataURL('image/jpeg', 0.88), 'JPEG', m, yOff, cW, slH * ratio);
-      srcY += slH;
-      if (srcY < canvas.height) { pdf.addPage(); pdf.setFillColor(240,244,248); pdf.rect(0,0,pW,pH,'F'); yOff = 10; }
+
+    // Detect mobile
+    const isMobile = window.innerWidth < 768;
+
+    // Lower scale on mobile to avoid memory issues
+    const scale = isMobile ? 1.0 : 1.4;
+    const renderWidth = isMobile ? window.innerWidth : 1100;
+
+    loadingText.textContent = 'Preparando ejercicios…';
+
+    // Capture card by card on mobile to avoid timeout
+    const pdf = new jsPDF({ orientation:'p', unit:'mm', format:'a4' });
+    const pW = pdf.internal.pageSize.getWidth();
+    const pH = pdf.internal.pageSize.getHeight();
+    const m = 10, cW = pW - m * 2;
+
+    function addHeader(isFirst) {
+      pdf.setFillColor(240,244,248); pdf.rect(0,0,pW,pH,'F');
+      pdf.setFontSize(isFirst ? 10 : 8);
+      pdf.setTextColor(30,58,95);
+      if (isFirst) {
+        pdf.text('Catalina · Rutina Personalizada', m, 7);
+        pdf.text(`${label} — ${title}`, m, 12);
+        pdf.setDrawColor(226,232,240); pdf.line(m,14,pW-m,14);
+        return 17;
+      } else {
+        pdf.text(`${label} — ${title} (cont.)`, m, 7);
+        pdf.setDrawColor(226,232,240); pdf.line(m,9,pW-m,9);
+        return 12;
+      }
     }
-    const tot = pdf.internal.getNumberOfPages();
-    for (let i = 1; i <= tot; i++) {
-      pdf.setPage(i); pdf.setFontSize(8); pdf.setTextColor(148,163,184);
-      pdf.text(`Pág. ${i} / ${tot}`, pW/2, pH-4, {align:'center'});
+
+    if (isMobile) {
+      // Mobile: capture each card individually
+      const cards = active.querySelectorAll('.ex-card');
+      let yOff = addHeader(true);
+      let pageNum = 1;
+      loadingText.textContent = `Procesando ejercicio 0/${cards.length}…`;
+
+      for (let i = 0; i < cards.length; i++) {
+        loadingText.textContent = `Procesando ejercicio ${i+1}/${cards.length}…`;
+
+        // Small delay to keep UI responsive
+        await new Promise(r => setTimeout(r, 50));
+
+        const card = cards[i];
+        const cardCanvas = await html2canvas(card, {
+          scale: scale,
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: '#ffffff',
+          logging: false,
+          windowWidth: renderWidth,
+        });
+
+        const cardRatio = cW / cardCanvas.width;
+        const cardH = cardCanvas.height * cardRatio;
+
+        // New page if card doesn't fit
+        if (yOff + cardH > pH - 10) {
+          pdf.setFontSize(8); pdf.setTextColor(148,163,184);
+          pdf.text(`Pág. ${pageNum}`, pW/2, pH-4, {align:'center'});
+          pdf.addPage();
+          pageNum++;
+          yOff = addHeader(false);
+        }
+
+        const imgData = cardCanvas.toDataURL('image/jpeg', 0.82);
+        pdf.addImage(imgData, 'JPEG', m, yOff, cW, cardH);
+        yOff += cardH + 3;
+      }
+
+      pdf.setFontSize(8); pdf.setTextColor(148,163,184);
+      pdf.text(`Pág. ${pageNum}`, pW/2, pH-4, {align:'center'});
+
+    } else {
+      // Desktop: capture full section at once
+      loadingText.textContent = 'Capturando página…';
+      const canvas = await html2canvas(active, {
+        scale: scale,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#f0f4f8',
+        logging: false,
+        windowWidth: renderWidth,
+      });
+
+      const ratio = cW / canvas.width;
+      let srcY = 0, yOff = addHeader(true), pageNum = 1;
+
+      while (srcY < canvas.height) {
+        const slH = Math.min((pH - yOff - 10) / ratio, canvas.height - srcY);
+        const sc = document.createElement('canvas');
+        sc.width = canvas.width; sc.height = slH;
+        sc.getContext('2d').drawImage(canvas, 0, -srcY);
+        pdf.addImage(sc.toDataURL('image/jpeg', 0.85), 'JPEG', m, yOff, cW, slH * ratio);
+        srcY += slH;
+        if (srcY < canvas.height) {
+          pdf.setFontSize(8); pdf.setTextColor(148,163,184);
+          pdf.text(`Pág. ${pageNum}`, pW/2, pH-4, {align:'center'});
+          pdf.addPage(); pageNum++;
+          yOff = addHeader(false);
+        }
+      }
+      pdf.setFontSize(8); pdf.setTextColor(148,163,184);
+      pdf.text(`Pág. ${pageNum}`, pW/2, pH-4, {align:'center'});
     }
+
+    loadingText.textContent = 'Guardando PDF…';
     pdf.save(`catalina_${label.replace(/[^a-zA-Z0-9]/g,'_').toLowerCase()}.pdf`);
-  } catch(e) { console.error(e); alert('Error generando el PDF. Usá Imprimir como alternativa.'); }
-  finally { loading.classList.remove('show'); }
+
+  } catch(e) {
+    console.error(e);
+    alert('Error al generar el PDF. Intentá con menos contenido o usá el botón Imprimir.');
+  } finally {
+    loading.classList.remove('show');
+    if (loading.querySelector('p')) loading.querySelector('p').textContent = 'Generando PDF…';
+  }
 }
 
 function printPage() { window.print(); }
